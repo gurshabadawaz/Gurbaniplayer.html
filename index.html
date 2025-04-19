@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Custom Gurbani Audio Player</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+        .player-container {
+            position: relative;
+        }
+        .back-button {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            padding: 8px 16px;
+            font-size: 14px;
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            background-color: #dc3545;
+            color: white;
+            transition: background-color 0.3s;
+        }
+        .back-button:hover {
+            background-color: #c82333;
+        }
+        .player-controls {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 20px;
+            margin: 40px 0 20px;
+        }
+        .player-controls button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            background-color: #007bff;
+            color: white;
+            transition: background-color 0.3s;
+        }
+        .player-controls button:hover {
+            background-color: #0056b3;
+        }
+        .current-stream {
+            text-align: center;
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        .error-message {
+            text-align: center;
+            color: #dc3545;
+            font-size: 14px;
+            margin-bottom: 10px;
+            display: none;
+        }
+        @media (max-width: 480px) {
+            .player-controls button {
+                padding: 8px 16px;
+                font-size: 14px;
+            }
+            .back-button {
+                padding: 6px 12px;
+                font-size: 12px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="player-container">
+            <button class="back-button" onclick="window.location.href='index.html'">⬅️ Back</button>
+            <div class="current-stream" id="current-stream">No stream selected</div>
+            <div class="error-message" id="error-message"></div>
+            <div class="player-controls">
+                <button onclick="skipBackward()">⏪ Backward</button>
+                <button onclick="togglePlay()" id="play-pause">▶️ Play</button>
+                <button onclick="skipForward()">⏩ Forward</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const audio = new Audio();
+        let currentStream = null;
+        let offlineTimeout = null;
+        let hls = null;
+        let isPlaying = false;
+
+        const currentStreamDisplay = document.getElementById('current-stream');
+        const errorMessage = document.getElementById('error-message');
+        const playPauseButton = document.getElementById('play-pause');
+
+        // Read URL parameters
+        const urlParams = new URLSearchParams(window.location.search);
+        const streamUrl = decodeURIComponent(urlParams.get('url') || '');
+        const streamName = decodeURIComponent(urlParams.get('name') || '');
+
+        // Validate and auto-play stream if URL parameters are present
+        if (streamUrl && streamName) {
+            playStream(streamUrl, streamName);
+        } else {
+            errorMessage.textContent = 'Invalid stream parameters. Please select a stream from the main page.';
+            errorMessage.style.display = 'block';
+        }
+
+        // Debounce function to prevent rapid clicks
+        function debounce(func, wait) {
+            let timeout;
+            return function (...args) {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => func.apply(this, args), wait);
+            };
+        }
+
+        // Cleanup function for audio and HLS
+        function cleanup() {
+            audio.pause();
+            audio.src = '';
+            audio.currentTime = 0;
+            audio.removeEventListener('canplay', audio.oncanplay);
+            if (offlineTimeout) clearTimeout(offlineTimeout);
+            if (hls) {
+                hls.destroy();
+                hls = null;
+            }
+            isPlaying = false;
+        }
+
+        // Play stream with debouncing
+        const debouncePlayStream = debounce((url, name) => {
+            // Prevent playing if already in progress
+            if (isPlaying) return;
+            isPlaying = true;
+
+            // Clean up previous state
+            cleanup();
+            errorMessage.style.display = 'none';
+            errorMessage.textContent = '';
+
+            // Update player UI
+            currentStream = url;
+            currentStreamDisplay.textContent = `Playing: ${name}`;
+            playPauseButton.textContent = '⏸️ Pause';
+
+            // Set up offline detection
+            offlineTimeout = setTimeout(() => {
+                errorMessage.textContent = `This channel is offline now.`;
+                errorMessage.style.display = 'block';
+                isPlaying = false;
+            }, 10000); // 10 seconds
+
+            // Handle HLS streams
+            if (url.endsWith('.m3u8')) {
+                if (Hls.isSupported()) {
+                    hls = new Hls();
+                    hls.loadSource(url);
+                    hls.attachMedia(audio);
+                    hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+                        audio.play().then(() => {
+                            clearTimeout(offlineTimeout);
+                            isPlaying = false;
+                        }).catch(error => {
+                            clearTimeout(offlineTimeout);
+                            errorMessage.textContent = `Failed to play ${name}. Possible CORS or server issue.`;
+                            errorMessage.style.display = 'block';
+                            console.error("Error playing HLS stream:", error);
+                            isPlaying = false;
+                        });
+                    });
+                    hls.on(Hls.Events.ERROR, (event, data) => {
+                        clearTimeout(offlineTimeout);
+                        errorMessage.textContent = `Failed to play ${name}. This channel may be offline or unsupported.`;
+                        errorMessage.style.display = 'block';
+                        console.error("HLS error:", data);
+                        isPlaying = false;
+                    });
+                    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                        clearTimeout(offlineTimeout);
+                    });
+                } else {
+                    // Fallback for native HLS support
+                    audio.src = url;
+                    audio.play().then(() => {
+                        clearTimeout(offlineTimeout);
+                        isPlaying = false;
+                    }).catch(error => {
+                        clearTimeout(offlineTimeout);
+                        errorMessage.textContent = `Failed to play ${name}. HLS not supported by browser.`;
+                        errorMessage.style.display = 'block';
+                        console.error("Error playing native HLS stream:", error);
+                        isPlaying = false;
+                    });
+                }
+            } else {
+                // Handle regular audio streams
+                audio.oncanplay = () => {
+                    clearTimeout(offlineTimeout);
+                    audio.removeEventListener('canplay', audio.oncanplay);
+                    isPlaying = false;
+                };
+                audio.addEventListener('canplay', audio.oncanplay);
+                audio.src = url;
+                audio.play().then(() => {
+                    clearTimeout(offlineTimeout);
+                    isPlaying = false;
+                }).catch(error => {
+                    clearTimeout(offlineTimeout);
+                    errorMessage.textContent = `Failed to play ${name}. This channel may be offline now.`;
+                    errorMessage.style.display = 'block';
+                    console.error("Error playing stream:", error);
+                    isPlaying = false;
+                });
+            }
+        }, 300);
+
+        function playStream(url, name) {
+            debouncePlayStream(url, name);
+        }
+
+        function togglePlay() {
+            if (!currentStream) {
+                errorMessage.textContent = 'No stream selected.';
+                errorMessage.style.display = 'block';
+                return;
+            }
+            if (audio.paused) {
+                audio.play().then(() => {
+                    playPauseButton.textContent = '⏸️ Pause';
+                }).catch(error => {
+                    errorMessage.textContent = 'Failed to resume playback.';
+                    errorMessage.style.display = 'block';
+                    console.error("Error resuming stream:", error);
+                });
+            } else {
+                audio.pause();
+                playPauseButton.textContent = '▶️ Play';
+            }
+        }
+
+        function skipForward() {
+            if (currentStream) {
+                audio.currentTime += 10;
+            }
+        }
+
+        function skipBackward() {
+            if (currentStream) {
+                audio.currentTime -= 10;
+            }
+        }
+    </script>
+</body>
+</html>
